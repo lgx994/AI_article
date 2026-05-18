@@ -24,16 +24,21 @@ jobs:
           if [ ! -f state.json ]; then
             echo '{"day":0}' > state.json
           fi
+
           DAY=$(jq -r '.day' state.json)
-          NEW_DAY=$((DAY+1))
+          NEW_DAY=$((DAY + 1))
+
           echo "{\"day\":$NEW_DAY}" > state.json
+
           echo "day=$NEW_DAY" >> $GITHUB_OUTPUT
 
       - name: Commit updated day
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+
           git add state.json
+
           git commit -m "Day ${{ steps.counter.outputs.day }}" || true
           git push || true
 
@@ -51,17 +56,16 @@ jobs:
         id: schedule
         run: |
           DAY=${{ steps.counter.outputs.day }}
+
           if [ ! -f schedule.json ]; then
             echo "Error: schedule.json not found"
             exit 1
           fi
-          TOPIC=$(jq -r ".\"$DAY\".topic // empty" schedule.json)
-          SUBTOPIC=$(jq -r ".\"$DAY\".subtopic // empty" schedule.json)
+
+          TOPIC=$(jq -r ".\"$DAY\".topic" schedule.json)
+          SUBTOPIC=$(jq -r ".\"$DAY\".subtopic" schedule.json)
           BRIDGE=$(jq -r ".\"$DAY\".bridge // empty" schedule.json)
-          if [ -z "$TOPIC" ] || [ -z "$SUBTOPIC" ]; then
-            echo "Error: Missing topic or subtopic for day $DAY"
-            exit 1
-          fi
+
           echo "topic=$TOPIC" >> $GITHUB_OUTPUT
           echo "subtopic=$SUBTOPIC" >> $GITHUB_OUTPUT
           echo "bridge=$BRIDGE" >> $GITHUB_OUTPUT
@@ -69,7 +73,6 @@ jobs:
       - name: Randomize other variables
         id: vars
         run: |
-          # 定义数组
           ARTICLE_TYPES=("叙事主导型" "模型主导型" "观察笔记型" "书信/对话型" "场景切片型" "问答/假想对话型")
           TONES=("学长型" "观察者型" "同行者型" "反思者型" "讲述者型")
           OPENINGS=("场景开场" "疑问开场" "引用开场" "自我暴露开场" "反常识开场" "留白开场")
@@ -77,7 +80,6 @@ jobs:
           VARIANTS=("标准结构" "精简结构" "极简结构")
           FIRST_PERSON=("标准" "高" "低")
 
-          # 随机抽取
           rand_idx=$(( RANDOM % ${#ARTICLE_TYPES[@]} ))
           ARTICLE_TYPE=${ARTICLE_TYPES[$rand_idx]}
 
@@ -96,43 +98,44 @@ jobs:
           rand_idx=$(( RANDOM % ${#FIRST_PERSON[@]} ))
           FIRST_PERSON_INTENSITY=${FIRST_PERSON[$rand_idx]}
 
-          # 外部锚点随机
           ANCHOR_CHOICE=$(( RANDOM % 2 ))
+
           if [ $ANCHOR_CHOICE -eq 1 ]; then
             EXTERNAL_ANCHOR="有（根据近期校园事件或节气）"
           else
             EXTERNAL_ANCHOR="无"
           fi
 
-          # 禁止词
           FORBIDDEN_TERMS="本质上,毋庸置疑,在当今社会"
 
-          # 避免与昨日重复
           if [ -f state.json ]; then
-            YESTERDAY_ARTICLE_TYPE=$(jq -r '.last_article_type' state.json 2>/dev/null || echo "")
-            YESTERDAY_TONE=$(jq -r '.last_tone' state.json 2>/dev/null || echo "")
+            YESTERDAY_ARTICLE_TYPE=$(jq -r '.last_article_type // ""' state.json)
+            YESTERDAY_TONE=$(jq -r '.last_tone // ""' state.json)
           else
             YESTERDAY_ARTICLE_TYPE=""
             YESTERDAY_TONE=""
           fi
 
           DAY=${{ steps.counter.outputs.day }}
+
           if [ "$DAY" -ne 1 ]; then
             if [ "$ARTICLE_TYPE" = "$YESTERDAY_ARTICLE_TYPE" ]; then
               rand_idx=$(( RANDOM % ${#ARTICLE_TYPES[@]} ))
               ARTICLE_TYPE=${ARTICLE_TYPES[$rand_idx]}
             fi
+
             if [ "$TONE" = "$YESTERDAY_TONE" ]; then
               rand_idx=$(( RANDOM % ${#TONES[@]} ))
               TONE=${TONES[$rand_idx]}
             fi
           fi
 
-          # 保存今日变量
-          jq --arg at "$ARTICLE_TYPE" --arg tn "$TONE" \
-            '. + {last_article_type: $at, last_tone: $tn}' state.json > tmp.json && mv tmp.json state.json
+          jq \
+            --arg at "$ARTICLE_TYPE" \
+            --arg tn "$TONE" \
+            '. + {last_article_type: $at, last_tone: $tn}' \
+            state.json > tmp.json && mv tmp.json state.json
 
-          # 输出
           echo "article_type=$ARTICLE_TYPE" >> $GITHUB_OUTPUT
           echo "tone=$TONE" >> $GITHUB_OUTPUT
           echo "opening=$OPENING" >> $GITHUB_OUTPUT
@@ -146,14 +149,16 @@ jobs:
         id: next_schedule
         run: |
           DAY=${{ steps.counter.outputs.day }}
-          NEXT_DAY=$((DAY+1))
+          NEXT_DAY=$((DAY + 1))
+
           if [ $NEXT_DAY -le 365 ]; then
-            NEXT_TOPIC=$(jq -r ".\"$NEXT_DAY\".topic // empty" schedule.json)
-            NEXT_SUBTOPIC=$(jq -r ".\"$NEXT_DAY\".subtopic // empty" schedule.json)
+            NEXT_TOPIC=$(jq -r ".\"$NEXT_DAY\".topic" schedule.json)
+            NEXT_SUBTOPIC=$(jq -r ".\"$NEXT_DAY\".subtopic" schedule.json)
           else
             NEXT_TOPIC=""
             NEXT_SUBTOPIC=""
           fi
+
           echo "next_topic=$NEXT_TOPIC" >> $GITHUB_OUTPUT
           echo "next_subtopic=$NEXT_SUBTOPIC" >> $GITHUB_OUTPUT
 
@@ -162,48 +167,60 @@ jobs:
           API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           TODAY=$(TZ='Asia/Shanghai' date '+%Y年%m月%d日')
+
           PROMPT_MAIN=$(cat prompt.txt)
           PROMPT_EXAMPLES=$(cat examples.txt 2>/dev/null || echo "")
 
-          PROMPT="${PROMPT_MAIN}
+          PROMPT="$PROMPT_MAIN
 
----
+          ---
 
-# 示例（外部文件）
-${PROMPT_EXAMPLES}"
+          # 示例（外部文件）
+          $PROMPT_EXAMPLES"
 
-          # 替换所有变量
-          PROMPT=$(echo "$PROMPT" | sed "s/{{TODAY}}/$TODAY/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{PREVIOUS_FORECAST}}/${{ steps.forecast.outputs.forecast }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{TOPIC}}/${{ steps.schedule.outputs.topic }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{SUBTOPIC}}/${{ steps.schedule.outputs.subtopic }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{BRIDGE}}/${{ steps.schedule.outputs.bridge }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{ARTICLE_TYPE}}/${{ steps.vars.outputs.article_type }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{TONE}}/${{ steps.vars.outputs.tone }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{OPENING_STYLE}}/${{ steps.vars.outputs.opening }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{ENDING_STYLE}}/${{ steps.vars.outputs.ending }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{STRUCTURE_VARIANT}}/${{ steps.vars.outputs.variant }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{EXTERNAL_ANCHOR}}/${{ steps.vars.outputs.external_anchor }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{FIRST_PERSON_INTENSITY}}/${{ steps.vars.outputs.first_person }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{FORBIDDEN_TERMS}}/${{ steps.vars.outputs.forbidden_terms }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{NEXT_TOPIC}}/${{ steps.next_schedule.outputs.next_topic }}/g")
-          PROMPT=$(echo "$PROMPT" | sed "s/{{NEXT_SUBTOPIC}}/${{ steps.next_schedule.outputs.next_subtopic }}/g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{TODAY}}|$TODAY|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{PREVIOUS_FORECAST}}|${{ steps.forecast.outputs.forecast }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{TOPIC}}|${{ steps.schedule.outputs.topic }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{SUBTOPIC}}|${{ steps.schedule.outputs.subtopic }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{BRIDGE}}|${{ steps.schedule.outputs.bridge }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{ARTICLE_TYPE}}|${{ steps.vars.outputs.article_type }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{TONE}}|${{ steps.vars.outputs.tone }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{OPENING_STYLE}}|${{ steps.vars.outputs.opening }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{ENDING_STYLE}}|${{ steps.vars.outputs.ending }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{STRUCTURE_VARIANT}}|${{ steps.vars.outputs.variant }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{EXTERNAL_ANCHOR}}|${{ steps.vars.outputs.external_anchor }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{FIRST_PERSON_INTENSITY}}|${{ steps.vars.outputs.first_person }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{FORBIDDEN_TERMS}}|${{ steps.vars.outputs.forbidden_terms }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{NEXT_TOPIC}}|${{ steps.next_schedule.outputs.next_topic }}|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{NEXT_SUBTOPIC}}|${{ steps.next_schedule.outputs.next_subtopic }}|g")
 
-          JSON=$(jq -n --arg p "$PROMPT" \
-            '{
-              model: "deepseek-v4-flash",
-              messages: [{role: "user", content: $p}],
-              reasoning_effort: "max",
-              temperature: 0.95,
-              max_tokens: 4000
-            }')
+          JSON=$(jq -n --arg p "$PROMPT" '
+          {
+            model: "deepseek-chat",
+            messages: [
+              {
+                role: "user",
+                content: $p
+              }
+            ],
+            temperature: 0.95,
+            max_tokens: 4000
+          }')
 
           RESPONSE=$(curl -s https://api.deepseek.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $API_KEY" \
             -d "$JSON")
 
-          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          echo "$RESPONSE"
+
+          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+
+          if [ -z "$CONTENT" ]; then
+            echo "DeepSeek API failed"
+            exit 1
+          fi
+
           echo "$CONTENT" > report.md
 
       - name: Get Feishu Access Token
@@ -212,10 +229,13 @@ ${PROMPT_EXAMPLES}"
           APP_ID: ${{ secrets.FEISHU_APP_ID }}
           APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          RESPONSE=$(curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
+          RESPONSE=$(curl -s -X POST \
+            https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
             -H "Content-Type: application/json" \
             -d "{\"app_id\":\"$APP_ID\",\"app_secret\":\"$APP_SECRET\"}")
+
           TOKEN=$(echo "$RESPONSE" | jq -r '.tenant_access_token')
+
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Upload markdown file
@@ -223,13 +243,16 @@ ${PROMPT_EXAMPLES}"
         env:
           TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          RESPONSE=$(curl -s -X POST https://open.feishu.cn/open-apis/drive/v1/files/upload_all \
+          RESPONSE=$(curl -s -X POST \
+            https://open.feishu.cn/open-apis/drive/v1/files/upload_all \
             -H "Authorization: Bearer $TOKEN" \
             -F "file_name=report.md" \
             -F "parent_type=explorer" \
             -F "size=$(wc -c < report.md)" \
             -F "file=@report.md")
+
           FILE_TOKEN=$(echo "$RESPONSE" | jq -r '.data.file_token')
+
           echo "filetoken=$FILE_TOKEN" >> $GITHUB_OUTPUT
 
       - name: Send file link to Feishu
@@ -239,9 +262,11 @@ ${PROMPT_EXAMPLES}"
           DAY: ${{ steps.counter.outputs.day }}
         run: |
           LINK="https://www.feishu.cn/file/${FILE_TOKEN}"
+
           PAYLOAD=$(jq -n \
             --arg text "【认知】📚 Day ${DAY}\n\nMarkdown 文件已生成：\n${LINK}" \
             '{msg_type:"text",content:{text:$text}}')
+
           curl -s -X POST "$WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
