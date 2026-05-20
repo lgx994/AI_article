@@ -18,9 +18,9 @@
                       │ 不通过
                       ▼
                ┌─────────────┐
-               │   Rewriter  │───(重试，最多3次)───┐
-               │    重写     │                     │
-               └─────────────┘◀────────────────────┘
+               │   Rewriter  │───(重试)───┐
+               │    重写     │            │
+               └─────────────┘◀──────────┘
 ```
 
 ## 📁 文件结构
@@ -55,8 +55,8 @@ cognition_agent_dag/
 # 设置环境变量
 export DEEPSEEK_API_KEY="your-api-key"
 export FEISHU_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-export FEISHU_APP_ID="your-app-id"        # 可选
-export FEISHU_APP_SECRET="your-app-secret" # 可选
+export FEISHU_APP_ID="your-app-id"        
+export FEISHU_APP_SECRET="your-app-secret" 
 ```
 
 ### 3. 运行
