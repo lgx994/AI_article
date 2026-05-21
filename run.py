@@ -10,6 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 import logging
+from typing import Optional
 
 # 配置日志
 logging.basicConfig(
@@ -218,5 +219,4 @@ def main():
 
 
 if __name__ == "__main__":
-    from typing import Optional
     main()
