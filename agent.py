@@ -159,11 +159,11 @@ class VariablePool:
         if article_type == "模型主导型":
             model_count = 2
         elif stage in ["认知觉察"]:
-            model_count = random.choice([0, 1])
+            model_count = 1
         elif stage in ["现实理解", "结构与文明"]:
             model_count = random.choice([1, 2])
         else:
-            model_count = random.choice([0, 1, 2])
+            model_count = random.choice([1, 2])
         
         first_person = random.choice(cls.FIRST_PERSON_LEVELS)
         forbidden_words = random.sample(cls.FORBIDDEN_WORDS, k=random.randint(3, 4))
@@ -195,7 +195,7 @@ class DeepSeekClient:
         self.api_key = api_key
         self.url = "https://api.deepseek.com/v1/chat/completions"
     
-    def call(self, prompt: str, model: str = "deepseek-chat", temperature: float = 0.7, max_tokens: int = 4000) -> str:
+    def call(self, prompt: str, model: str = "deepseek-reasoner", temperature: float = 0.7, max_tokens: int = 4000) -> str:
         """调用API"""
         headers = {
             "Content-Type": "application/json",
@@ -207,7 +207,8 @@ class DeepSeekClient:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "enable_search": True  # 启用联网搜索
+            "enable_search": True,
+            "thinking": {"type": "enabled"},
         }
         
         try:
@@ -217,6 +218,7 @@ class DeepSeekClient:
             return data["choices"][0]["message"]["content"]
         except Exception as e:
             logger.error(f"API调用失败: {e}")
+            logger.error(f"响应内容: {response.text if 'response' in locals() else '无'}")
             raise
 
 
@@ -252,14 +254,14 @@ class NodeStateManager:
         return AgentState(day=day, stage=VariablePool.get_stage(day))
     
     def save_state(self, state: AgentState):
-        # 只保存天数到 state.json
+    # 只保存天数到 state.json
         with open("state.json", 'w', encoding='utf-8') as f:
             json.dump({"day": state.day}, f, ensure_ascii=False)
-    
+        
     # 历史记录保存到 agent_state.json（可选）
-    with open("agent_state.json", 'w', encoding='utf-8') as f:
-        json.dump(asdict(state), f, ensure_ascii=False, indent=2)
-    
+        with open("agent_state.json", 'w', encoding='utf-8') as f:
+            json.dump(asdict(state), f, ensure_ascii=False, indent=2)
+            
     def execute(self, context: Dict) -> Dict:
         logger.info(f"[{self.name}] 加载状态")
         
@@ -328,7 +330,7 @@ class NodePlanner:
         self.name = "Planner"
         self.client = client
         self.prompt_file = Path(prompt_file)
-    
+
     def _load_prompt_template(self) -> str:
         if self.prompt_file.exists():
             with open(self.prompt_file, 'r', encoding='utf-8') as f:
@@ -362,7 +364,7 @@ class NodePlanner:
         logger.info(f"[{self.name}] 生成写作规划")
         
         prompt = self._build_prompt(context)
-        response = self.client.call(prompt, model="deepseek-chat")
+        response = self.client.call(prompt, model="deepseek-reasoner")
         
         # 解析JSON响应
         try:
@@ -434,7 +436,7 @@ class NodeWriter:
         logger.info(f"[{self.name}] 生成文章")
         
         prompt = self._build_prompt(context)
-        article = self.client.call(prompt, model="deepseek-chat", max_tokens=6000)
+        article = self.client.call(prompt, model="deepseek-v4-pro", max_tokens=8000)
         
         context["article"] = article
         context["word_count"] = len(article.replace(' ', '').replace('\n', ''))
@@ -475,10 +477,26 @@ class NodeReviewer:
     
     def execute(self, context: Dict) -> Dict:
         logger.info(f"[{self.name}] 审核文章")
+    
+        # 新增：检查文章是否为空
+        article = context.get("article", "")
+        if not article or len(article.strip()) < 100:
+            logger.error(f"  文章内容异常，长度: {len(article) if article else 0}")
+            context["review_result"] = {
+                "passed": False,
+                "issues": [{"item": "文章内容", "reason": "文章为空或内容不足，需重新生成"}],
+                "raw_response": "文章为空",
+                "conclusion": "必须重写"
+            }
+            return context
         
         prompt = self._build_prompt(context)
-        response = self.client.call(prompt, model="deepseek-chat", max_tokens=3000)
-        
+        response = self.client.call(prompt, model="deepseek-reasoner", max_tokens=3000)
+
+        # 新增：打印原始响应
+        logger.info(f"  审核响应长度: {len(response) if response else 0}")
+        logger.info(f"  审核响应前100字: {response[:100] if response else '空'}")
+            
         # 解析审核结果
         review_result = self._parse_review(response)
         context["review_result"] = review_result
@@ -495,33 +513,48 @@ class NodeReviewer:
     def _parse_review(self, response: str) -> Dict:
         """解析审核响应"""
         issues = []
-        passed = False
         
         lines = response.split('\n')
         for line in lines:
             line = line.strip()
             if line.startswith('-') or line.startswith('•'):
-                # 解析每个审核项
                 if '❌' in line or '不通过' in line:
-                    # 提取项目名和原因
-                    match = re.search(r'[\-•]\s*(.+?)[:：]\s*❌\s*不通过[（(](.+?)[)）]', line)
+                    match = re.search(r'[\-•]\s*\*?\*?(.+?)\*?\*?[:：]', line)
                     if match:
-                        issues.append({
-                            "item": match.group(1).strip(),
-                            "reason": match.group(2).strip()
-                        })
-                    else:
-                        issues.append({"item": line, "reason": ""})
+                        item_name = match.group(1).strip()
+                        # 提取原因
+                        reason = ""
+                        if '（' in line and '）' in line:
+                            reason = line[line.find('（')+1:line.find('）')]
+                        issues.append({"item": item_name, "reason": reason})
         
-        # 判断结论
-        if "结论：通过" in response or "结论: 通过" in response:
-            passed = True
+        # 优先看结论行判断是否通过
+        passed = False
+        conclusion = "必须重写"
+        
+        for line in reversed(lines):
+            line = line.strip()
+            if '结论' in line:
+                if '通过' in line and '不通过' not in line and '建议修改' not in line:
+                    passed = True
+                    conclusion = "通过"
+                elif '建议修改' in line:
+                    passed = False
+                    conclusion = "建议修改"
+                else:
+                    passed = False
+                    conclusion = "必须重写"
+                break
+        
+        # 如果没有结论行，看是否有任何不通过项
+        if '结论' not in response:
+            passed = len(issues) == 0
         
         return {
             "passed": passed,
             "issues": issues,
             "raw_response": response,
-            "conclusion": "通过" if passed else "建议修改" if issues else "必须重写"
+            "conclusion": conclusion
         }
 
 
@@ -541,12 +574,18 @@ class NodeRewriter:
     def _build_prompt(self, context: Dict) -> str:
         template = self._load_prompt_template()
         
-        review = context.get("review_result", {})
-        issues_text = "\n".join([f"- {i.get('item')}: {i.get('reason', '')}" for i in review.get("issues", [])])
+        # 直接传完整审核响应，不截断
+        review_raw = context.get("review_result", {}).get("raw_response", "")
         
         prompt = template
         prompt = prompt.replace("{{ARTICLE}}", context["article"])
-        prompt = prompt.replace("{{REVIEW_COMMENTS}}", issues_text or "无具体问题")
+        prompt = prompt.replace("{{REVIEW_COMMENTS}}", review_raw or "无具体问题")
+        
+        # 带上写作参数提醒
+        prompt += f"\n\n【写作参数提醒】\n"
+        prompt += f"- 文章类型：{context['variables']['article_type']}\n"
+        prompt += f"- 必选板块：标题、切入点、世界展开、核心模型、现实映射、主体性、输出任务、金句、明日预告\n"
+        prompt += f"- 目标字数：3500字左右\n"
         
         return prompt
     
@@ -554,7 +593,7 @@ class NodeRewriter:
         logger.info(f"[{self.name}] 根据审核意见重写")
         
         prompt = self._build_prompt(context)
-        article = self.client.call(prompt, model="deepseek-chat", max_tokens=6000)
+        article = self.client.call(prompt, model="deepseek-v4-pro", max_tokens=8000)
         
         context["article"] = article
         context["word_count"] = len(article.replace(' ', '').replace('\n', ''))
@@ -608,28 +647,34 @@ class CognitionDAG:
             # === 阶段4: 规划 ===
             context = self.node_planner.execute(context)
             
-            # === 阶段5-7: 写作-审核循环 ===
+           # === 阶段5-7: 写作-审核循环 ===
+
+            # 写作（只调用一次）
+            context = self.node_writer.execute(context)
+
+            max_rewrites = 5  # 最多重写5次
+
             while True:
-                # 写作
-                context = self.node_writer.execute(context)
-                
                 # 审核
                 context = self.node_reviewer.execute(context)
                 
                 review = context.get("review_result", {})
                 
-                # 检查是否通过
                 if review.get("passed"):
                     logger.info("✅ 文章审核通过，准备推送")
                     break
                 
-                # 检查重试次数
-                if context.get("retry_count", 0) >= self.max_retries:
-                    logger.warning(f"⚠️ 达到最大重试次数({self.max_retries})，使用当前版本")
-                    break
+                retry_count = context.get("retry_count", 0) + 1
+                context["retry_count"] = retry_count
                 
-                # 重写
-                logger.info(f"🔄 审核不通过，开始第{context.get('retry_count', 0)+1}次重写")
+                if retry_count > max_rewrites:
+                    # 超过次数，重新用Writer生成全新文章
+                    logger.warning(f"⚠️ 重写{retry_count}次仍未通过，重新生成文章")
+                    context = self.node_writer.execute(context)
+                    context["retry_count"] = 0  # 重置计数
+                    continue
+                
+                logger.info(f"🔄 审核不通过，开始第{retry_count}次重写")
                 context = self.node_rewriter.execute(context)
             
             # === 保存状态 ===
